@@ -1,3 +1,7 @@
+## Clonar
+`git clone --recursive https://github.com/dmateos-ugr/DDSI-Seminario1.git`
+ojito al `--recursive`
+
 ## ODBC
 Esto es necesario independientemente de si usamos Zig, Python, C o C++. Es para instalar el driver manager y el driver para oracle. Es basicamente lo que nos dice [aquí](https://www.oracle.com/es/database/technologies/releasenote-odbc-ic.html).
 1. Nos metemos [aquí](https://www.oracle.com/es/database/technologies/instant-client/linux-x86-64-downloads.html) y descargamos los archivos `oracle-instantclient-basic-21.4.0.0.0-1.el8.x86_64.rpm` y `oracle-instantclient-odbc-21.4.0.0.0-1.el8.x86_64.rpm`.
