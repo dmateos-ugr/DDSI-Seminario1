@@ -31,9 +31,22 @@ fn printMenu(out: std.fs.File.Writer) !void {
     try out.print("4. Salir y cerrar conexión\n", .{});
 }
 
+fn printAltaPedido(out: std.fs.File.Writer) !void {
+    try out.print("\n1. Añadir detalle de producto\n", .{});
+    try out.print("2. Eliminar todos los detalles de producto\n", .{});
+    try out.print("3. Cancelar pedido\n", .{});
+    try out.print("4. Finalizar pedido\n", .{});
+}
+
 const Stock = struct {
     cproducto: u32,
     cantidad: u32,
+};
+
+const DetallePedido = struct {
+    cpedido:    u32,
+    cproducto:  u32,
+    cantidad:   u32
 };
 
 fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void {
@@ -41,12 +54,23 @@ fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void
     defer cursor.deinit() catch unreachable;
 
     _ = cursor.statement.executeDirect("DROP TABLE stock") catch {};
+    _ = cursor.statement.executeDirect("DROP TABLE detalle-pedido") catch {};
 
     // _ = try cursor.executeDirect(Stock, .{},
     _ = try cursor.statement.executeDirect(
         \\CREATE TABLE Stock (
         \\  Cproducto INTEGER PRIMARY KEY,
         \\  cantidad INTEGER
+        \\ )
+    );
+
+    _ = try cursor.statement.executeDirect(
+        \\CREATE TABLE Detalle-Pedido (
+        \\  Cpedido INTEGER REFERENCES Pedido(Cpedido)
+        \\  Cproducto INTEGER REFERENCES Stock(Cproducto),
+        \\  cantidad INTEGER,
+        \\  CHECK(cantidad GE 0),
+        \\ CONSTRAINT detalle_pedido_clave_primaria PRIMARY KEY (Cpedido, Cproducto)
         \\ )
     );
 
@@ -63,6 +87,25 @@ fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void
 }
 
 fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
+    // Declaro uno nuevo o paso los ya creados en main como argumento?
+    var stdout = std.io.getStdOut().writer();
+    var stdin = std.io.getStdIn().reader();
+
+    while(true){
+        try printAltaPedido(stdout);
+        const input = (try readNumber(usize, stdin)) orelse break;
+
+        // switch (input) {
+        //     1 => try {},
+        //     2 => try {},
+        //     3 => try {},
+        //     4 => try {},
+        //     else => {
+        //         try stdout.print("El número debe ser del 1 al 4\n", .{});
+        //         continue;
+        //     }
+        // }
+    }
 }
 
 fn mostrarContenidoTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void {
