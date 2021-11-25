@@ -2,7 +2,28 @@ const std = @import("std");
 const zdb = @import("zdb");
 const Allocator = std.mem.Allocator;
 
-// fn printMenu(out: std.fs.File.Writer) void {
+// DAVID MATEOS: función readNumber
+// DAVID CANTÓN: capturar datos del pedido e insertarlo; menú que viene justo despues
+// DANIEL ZUFRÍ: opciones 1 y 2 del menú de dar de alta nuevo pedido
+
+fn readNumber(comptime T: type, in: std.fs.File.Reader) !?T {
+    var stdout = std.io.getStdOut().writer();
+    var buf: [10]u8 = undefined;
+
+    while (true) {
+        // Leer entrada
+        try stdout.print("> ", .{});
+        const input_str = (try in.readUntilDelimiterOrEof(&buf, '\n')) orelse return null;
+
+        // Parsear la entrada como un entero de tipo `T`
+        const input = std.fmt.parseInt(T, input_str, 10) catch {
+            try stdout.print("Debes introducir un número\n\n", .{});
+            continue;
+        };
+        return input;
+    }
+}
+
 fn printMenu(out: std.fs.File.Writer) !void {
     try out.print("\n1. Restablecer tablas e inserción de 10 tuplas predefinidas en la tabla Stock\n", .{});
     try out.print("2. Dar de alta nuevo pedido\n", .{});
@@ -10,17 +31,54 @@ fn printMenu(out: std.fs.File.Writer) !void {
     try out.print("4. Salir y cerrar conexión\n", .{});
 }
 
+const Stock = struct {
+    cproducto: u32,
+    cantidad: u32,
+};
+
 fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void {
     var cursor = try connection.getCursor(allocator);
     defer cursor.deinit() catch unreachable;
 
-    // cursor.insert()
+    _ = cursor.statement.executeDirect("DROP TABLE stock") catch {};
+
+    // _ = try cursor.executeDirect(Stock, .{},
+    _ = try cursor.statement.executeDirect(
+        \\CREATE TABLE Stock (
+        \\  Cproducto INTEGER PRIMARY KEY,
+        \\  cantidad INTEGER
+        \\ )
+    );
+
+    var stocks: [10]Stock = undefined;
+    for (stocks) |*stock, i| {
+        stock.cproducto = @intCast(u32, i + 1);
+        stock.cantidad = @intCast(u32, i + 1);
+    }
+
+    const result = try cursor.insert(Stock, "stock", &stocks);
+    if (result != stocks.len) {
+        std.log.warn("it inserted {} instead of {}\n", .{result, stocks.len});
+    }
 }
 
 fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
 }
 
 fn mostrarContenidoTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void {
+    var cursor = try connection.getCursor(allocator);
+    defer cursor.deinit() catch unreachable;
+
+    var result_set = try cursor.executeDirect(
+        Stock,
+        .{ },
+        "SELECT * FROM STOCK;"
+    );
+    defer result_set.deinit();
+
+    while (try result_set.next()) |result| {
+        std.debug.print("stock: {}\n", .{result});
+    }
 }
 
 pub fn main() anyerror!void {
@@ -38,15 +96,8 @@ pub fn main() anyerror!void {
     while (true) {
         try printMenu(stdout);
 
-        // Leer de stdin
-        var buf: [10]u8 = undefined;
-        const input_str = (try stdin.readUntilDelimiterOrEof(&buf, '\n')) orelse break;
-
-        // Parsear la entrada como un `usize`
-        const input = std.fmt.parseInt(usize, input_str, 10) catch {
-            try stdout.print("Debes introducir un número\n", .{});
-            continue;
-        };
+        // Leer número
+        const input = (try readNumber(usize, stdin)) orelse break;
 
         switch (input) {
             1 => try restablecerTablas(allocator, &connection),
