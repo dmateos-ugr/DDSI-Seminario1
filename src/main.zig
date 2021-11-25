@@ -12,7 +12,7 @@ fn printMenu(out: std.fs.File.Writer) !void {
 
 fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void {
     var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit();
+    defer cursor.deinit() catch unreachable;
 
     // cursor.insert()
 }
