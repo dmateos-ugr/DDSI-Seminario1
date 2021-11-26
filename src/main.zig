@@ -1,28 +1,12 @@
 const std = @import("std");
 const zdb = @import("zdb");
+const utils = @import("utils.zig");
 const Allocator = std.mem.Allocator;
+const SqlDate = zdb.odbc.Types.CType.SqlDate;
 
-// DAVID MATEOS: función readNumber
+// DAVID MATEOS: función utils.readNumber
 // DAVID CANTÓN: capturar datos del pedido e insertarlo; menú que viene justo despues
 // DANIEL ZUFRÍ: opciones 1 y 2 del menú de dar de alta nuevo pedido
-
-fn readNumber(comptime T: type, in: std.fs.File.Reader) !?T {
-    var stdout = std.io.getStdOut().writer();
-    var buf: [10]u8 = undefined;
-
-    while (true) {
-        // Leer entrada
-        try stdout.print("> ", .{});
-        const input_str = (try in.readUntilDelimiterOrEof(&buf, '\n')) orelse return null;
-
-        // Parsear la entrada como un entero de tipo `T`
-        const input = std.fmt.parseInt(T, input_str, 10) catch {
-            try stdout.print("Debes introducir un número\n\n", .{});
-            continue;
-        };
-        return input;
-    }
-}
 
 fn printMenu(out: std.fs.File.Writer) !void {
     try out.print("\n1. Restablecer tablas e inserción de 10 tuplas predefinidas en la tabla Stock\n", .{});
@@ -46,75 +30,46 @@ const Stock = struct {
 const Pedido = struct {
     cpedido: u32,
     ccliente: u32,
-  //  fecha: SqlDate, 
+    fecha_pedido: SqlDate,
 };
 
 const DetallePedido = struct {
-    cpedido:    u32,
-    cproducto:  u32,
-    cantidad:   u32
+    cpedido: u32,
+    cproducto: u32,
+    cantidad: u32,
 };
-
-fn readPedido(allocator: *Allocator, connection: *zdb.DBConnection, in: std.fs.File.Reader) !?Pedido {
-    var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit() catch unreachable;
-
-    var stdout = std.io.getStdOut().writer();
-    var pedido: Pedido = undefined;
-
-    const MaxStruct = struct {
-        max: u32,
-    };
-
-    var result_set = try cursor.executeDirect(MaxStruct,.{},
-        \\ SELECT MAX(cpedido)
-        \\ FROM Pedido;
-    );
-
-    defer result_set.deinit();
-    const cpedido = (try result_set.next()).?.max;
-
-    std.debug.print("{}",.{cpedido});
-    try stdout.print("Introduzca su codigo de cliente ", .{});
-    pedido.ccliente = (try readNumber(u32, in)) orelse return null;
-
-// FALTA FECHA Y CPEDIDO
-
-    return pedido;
-}
 
 fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void {
     var cursor = try connection.getCursor(allocator);
     defer cursor.deinit() catch unreachable;
 
+    _ = cursor.statement.executeDirect("DROP TABLE detalle_pedido") catch {};
     _ = cursor.statement.executeDirect("DROP TABLE stock") catch {};
-    _ = cursor.statement.executeDirect("DROP TABLE detalle-pedido") catch {};
     _ = cursor.statement.executeDirect("DROP TABLE pedido") catch {};
 
-    // _ = try cursor.executeDirect(Stock, .{},
     _ = try cursor.statement.executeDirect(
-        \\CREATE TABLE Stock (
+        \\CREATE TABLE stock (
         \\  Cproducto INTEGER PRIMARY KEY,
         \\  cantidad INTEGER
-        \\ )
+        \\)
     );
 
     _ = try cursor.statement.executeDirect(
-        \\CREATE TABLE Detalle-Pedido (
-        \\  Cpedido INTEGER REFERENCES Pedido(Cpedido)
-        \\  Cproducto INTEGER REFERENCES Stock(Cproducto),
-        \\  cantidad INTEGER,
-        \\  CHECK(cantidad GE 0),
-        \\ CONSTRAINT detalle_pedido_clave_primaria PRIMARY KEY (Cpedido, Cproducto)
-        \\ )
-    );
-
-    _ = try cursor.statement.executeDirect(
-        \\CREATE TABLE Pedido (
+        \\CREATE TABLE pedido (
         \\  Cpedido INTEGER PRIMARY KEY,
         \\  Ccliente INTEGER,
-        \\  fecha-pedido DATE
-        \\ )
+        \\  fecha_pedido DATE
+        \\)
+    );
+
+    _ = try cursor.statement.executeDirect(
+        \\CREATE TABLE detalle_pedido (
+        \\  Cpedido INTEGER REFERENCES pedido(Cpedido),
+        \\  Cproducto INTEGER REFERENCES stock(Cproducto),
+        \\  cantidad INTEGER,
+        \\  CHECK(cantidad >= 0),
+        \\  CONSTRAINT detalle_pedido_clave_primaria PRIMARY KEY (Cpedido, Cproducto)
+        \\)
     );
 
     var stocks: [10]Stock = undefined;
@@ -125,8 +80,51 @@ fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void
 
     const result = try cursor.insert(Stock, "stock", &stocks);
     if (result != stocks.len) {
-        std.log.warn("it inserted {} instead of {}\n", .{result, stocks.len});
+        std.log.warn("it inserted {} instead of {}\n", .{ result, stocks.len });
     }
+}
+
+fn readPedido(allocator: *Allocator, connection: *zdb.DBConnection, in: std.fs.File.Reader) !Pedido {
+    var cursor = try connection.getCursor(allocator);
+    defer cursor.deinit() catch unreachable;
+
+    var stdout = std.io.getStdOut().writer();
+
+    // Obtener el cpedido, leyendo el máximo cpedido de la base de datos
+    const cpedido = bloque: {
+        const MaxStruct = struct {
+            max: u32,
+        };
+        var result_set = try cursor.executeDirect(MaxStruct, .{},
+            \\ SELECT MAX(cpedido)
+            \\ FROM pedido;
+        );
+        defer result_set.deinit();
+
+        // Obtener el resultado del query. Si no hay ninguno, asignamos 1.
+        const max_struct = (try result_set.next()) orelse break :bloque 1;
+        break :bloque max_struct.max + 1;
+    };
+
+    // Obtener la fecha en formato SQL
+    const sql_date = bloque: {
+        const date = utils.DateTime.fromTimestamp(std.time.timestamp());
+        break :bloque SqlDate{
+            .year = @intCast(c_short, date.year),
+            .month = date.month,
+            .day = date.day,
+        };
+    };
+
+    // Leer el código de cliente
+    try stdout.print("Introduzca su codigo de cliente ", .{});
+    const ccliente = try utils.readNumber(u32, in);
+
+    return Pedido{
+        .cpedido = cpedido,
+        .ccliente = ccliente,
+        .fecha_pedido = sql_date,
+    };
 }
 
 fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
@@ -136,24 +134,25 @@ fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
     var stdout = std.io.getStdOut().writer();
 
     // Capturamos pedido
-    const pedido = (try readPedido(allocator, connection, stdin)).?;
+    const pedido = try readPedido(allocator, connection, stdin);
+
     // Insertamos en la tabla
-    const result = try cursor.insert(Pedido, "pedido", &.{pedido});
+    _ = try cursor.insert(Pedido, "pedido", &.{pedido});
 
-    while(true){
+    while (true) {
         try printAltaPedido(stdout);
-        const input = (try readNumber(usize, stdin)) orelse break;
+        const input = try utils.readNumber(usize, stdin);
 
-        // switch (input) {
-        //     1 => try {},
-        //     2 => try {},
-        //     3 => try {},
-        //     4 => try {},
-        //     else => {
-        //         try stdout.print("El número debe ser del 1 al 4\n", .{});
-        //         continue;
-        //     }
-        // }
+        switch (input) {
+            1 => {},
+            2 => {},
+            3 => {},
+            4 => {},
+            else => {
+                try stdout.print("El número debe ser del 1 al 4\n", .{});
+                continue;
+            }
+        }
     }
 }
 
@@ -161,11 +160,7 @@ fn mostrarContenidoTablas(allocator: *Allocator, connection: *zdb.DBConnection) 
     var cursor = try connection.getCursor(allocator);
     defer cursor.deinit() catch unreachable;
 
-    var result_set = try cursor.executeDirect(
-        Stock,
-        .{ },
-        "SELECT * FROM STOCK;"
-    );
+    var result_set = try cursor.executeDirect(Stock, .{}, "SELECT * FROM STOCK;");
     defer result_set.deinit();
 
     while (try result_set.next()) |result| {
@@ -189,7 +184,7 @@ pub fn main() anyerror!void {
         try printMenu(stdout);
 
         // Leer número
-        const input = (try readNumber(usize, stdin)) orelse break;
+        const input = try utils.readNumber(usize, stdin);
 
         switch (input) {
             1 => try restablecerTablas(allocator, &connection),
@@ -199,7 +194,7 @@ pub fn main() anyerror!void {
             else => {
                 try stdout.print("El número debe ser del 1 al 4\n", .{});
                 continue;
-            }
+            },
         }
     }
 
