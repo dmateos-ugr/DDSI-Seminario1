@@ -43,11 +43,45 @@ const Stock = struct {
     cantidad: u32,
 };
 
+const Pedido = struct {
+    cpedido: u32,
+    ccliente: u32,
+  //  fecha: SqlDate, 
+};
+
 const DetallePedido = struct {
     cpedido:    u32,
     cproducto:  u32,
     cantidad:   u32
 };
+
+fn readPedido(allocator: *Allocator, connection: *zdb.DBConnection, in: std.fs.File.Reader) !?Pedido {
+    var cursor = try connection.getCursor(allocator);
+    defer cursor.deinit() catch unreachable;
+
+    var stdout = std.io.getStdOut().writer();
+    var pedido: Pedido = undefined;
+
+    const MaxStruct = struct {
+        max: u32,
+    };
+
+    var result_set = try cursor.executeDirect(MaxStruct,.{},
+        \\ SELECT MAX(cpedido)
+        \\ FROM Pedido;
+    );
+
+    defer result_set.deinit();
+    const cpedido = (try result_set.next()).?.max;
+
+    std.debug.print("{}",.{cpedido});
+    try stdout.print("Introduzca su codigo de cliente ", .{});
+    pedido.ccliente = (try readNumber(u32, in)) orelse return null;
+
+// FALTA FECHA Y CPEDIDO
+
+    return pedido;
+}
 
 fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void {
     var cursor = try connection.getCursor(allocator);
@@ -55,6 +89,7 @@ fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void
 
     _ = cursor.statement.executeDirect("DROP TABLE stock") catch {};
     _ = cursor.statement.executeDirect("DROP TABLE detalle-pedido") catch {};
+    _ = cursor.statement.executeDirect("DROP TABLE pedido") catch {};
 
     // _ = try cursor.executeDirect(Stock, .{},
     _ = try cursor.statement.executeDirect(
@@ -74,6 +109,14 @@ fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void
         \\ )
     );
 
+    _ = try cursor.statement.executeDirect(
+        \\CREATE TABLE Pedido (
+        \\  Cpedido INTEGER PRIMARY KEY,
+        \\  Ccliente INTEGER,
+        \\  fecha-pedido DATE
+        \\ )
+    );
+
     var stocks: [10]Stock = undefined;
     for (stocks) |*stock, i| {
         stock.cproducto = @intCast(u32, i + 1);
@@ -87,9 +130,15 @@ fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void
 }
 
 fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
-    // Declaro uno nuevo o paso los ya creados en main como argumento?
-    var stdout = std.io.getStdOut().writer();
+    var cursor = try connection.getCursor(allocator);
+    defer cursor.deinit() catch unreachable;
     var stdin = std.io.getStdIn().reader();
+    var stdout = std.io.getStdOut().writer();
+
+    // Capturamos pedido
+    const pedido = (try readPedido(allocator, connection, stdin)).?;
+    // Insertamos en la tabla
+    const result = try cursor.insert(Pedido, "pedido", &.{pedido});
 
     while(true){
         try printAltaPedido(stdout);
