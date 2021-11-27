@@ -4,10 +4,6 @@ const utils = @import("utils.zig");
 const Allocator = std.mem.Allocator;
 const SqlDate = zdb.odbc.Types.CType.SqlDate;
 
-// DAVID MATEOS: función utils.readNumber
-// DAVID CANTÓN: capturar datos del pedido e insertarlo; menú que viene justo despues
-// DANIEL ZUFRÍ: opciones 1 y 2 del menú de dar de alta nuevo pedido
-
 const stdin = std.io.getStdIn().reader();
 
 fn print(comptime format: []const u8, args: anytype) void {
@@ -171,47 +167,39 @@ fn rollbackToSavepoint(comptime nombre: []const u8, allocator: *Allocator, conne
     _ = try cursor.statement.executeDirect("ROLLBACK TO " ++ nombre);
 }
 
-fn sqlQuery(
-    allocator: *Allocator,
-    connection: *zdb.DBConnection,
-    comptime format: []const u8,
-    parameters: anytype,
-    ReturnType: type,
-) !zdb.ResultSet(ReturnType) {
-    var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit() catch unreachable;
-
-    const sql_query = try std.fmt.allocPrint(allocator, format, parameters);
-    defer allocator.free(sql_query);
-
-    return try cursor.executeDirect(ReturnType, .{}, format);
-}
-
 fn darAltaDetalle(pedido: Pedido, allocator: *Allocator, connection: *zdb.DBConnection) !void {
-    var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit() catch unreachable;
-
     // Leer cproducto
     print("Introduzca el código del producto que quiere comprar.\n", .{});
     const cproducto = try utils.readNumber(u32, stdin);
 
-    // Comprobar que existe el producto y obtener el stock
-    var result_set = try sqlQuery(
-        allocator,
-        connection,
-        "SELECT * FROM stock WHERE cproducto = {};",
-        .{cproducto},
-        Stock,
-    );
-    defer result_set.deinit();
-    const stock = (try result_set.next()) orelse {
-        print("No existe el producto de código {}\n", .{cproducto});
-        return;
+    // Obtener el stock asociado al cproducto de la base de datos comprobando que existe
+    const stock = bloque: {
+        var cursor = try connection.getCursor(allocator);
+        defer cursor.deinit() catch unreachable;
+
+        const sql_query = try std.fmt.allocPrint(
+            allocator,
+            "SELECT * FROM stock WHERE cproducto = {};",
+            .{cproducto},
+        );
+        defer allocator.free(sql_query);
+
+        var result_set = try cursor.executeDirect(Stock, .{}, sql_query);
+        defer result_set.deinit();
+        const stock = (try result_set.next()) orelse {
+            print("No existe el producto de código {}\n", .{cproducto});
+            return;
+        };
+        break :bloque stock;
     };
 
     // Leer cantidad
     print("Introduzca la cantidad del producto {}\n", .{cproducto});
     const cantidad = try utils.readNumber(u32, stdin);
+    if (cantidad == 0) {
+        print("La cantidad debe ser positiva!\n", .{});
+        return;
+    }
 
     const detalle = DetallePedido{
         .cpedido = pedido.cpedido,
@@ -219,15 +207,18 @@ fn darAltaDetalle(pedido: Pedido, allocator: *Allocator, connection: *zdb.DBConn
         .cantidad = cantidad,
     };
 
-    // Leemos el DetallePedido
-    // const detalle = try readDetallePedido(pedido);
+    // Comprobar que hay suficiente cantidad
     if (stock.cantidad < detalle.cantidad) {
         print("Sólo hay {} items del producto {}\n", .{ stock.cantidad, stock.cproducto });
         return;
     }
 
+    // Insertar el detalle
+    var cursor = try connection.getCursor(allocator);
+    defer cursor.deinit() catch unreachable;
     _ = try cursor.insert(DetallePedido, "detalle_pedido", &.{detalle});
 
+    // Actualizar la cantidad del stock
     const nueva_cantidad = stock.cantidad - detalle.cantidad;
     const sql_query = try std.fmt.allocPrint(allocator,
         \\UPDATE stock
