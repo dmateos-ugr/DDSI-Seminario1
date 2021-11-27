@@ -176,14 +176,22 @@ fn darAltaDetalle(pedido: Pedido, allocator: *Allocator, connection: *zdb.DBConn
     // TODO: arreglar esto
     // se debe comprobar que hay suficiente cantidad, y en ese caso modificar
     // la tupla dentro de Stock
-
+    
     // Leemos el DetallePedido
     const detalle = try readDetallePedido(pedido);
+    var stock = try cursor.executeDirect(Stock, .{detalle.cproducto},
+        \\ SELECT cantidad
+        \\ FROM stock
+        \\ WHERE cproducto = ?;
+    );
 
-    // Insertamos en la tabla
-    // if (stock.cantidad > 0) {
-    _ = try cursor.insert(DetallePedido, "detalle_pedido", &.{detalle});
-    // }
+    if(stock.cantidad>=detalle.cantidad){
+        _ = try cursor.insert(DetallePedido, "detalle_pedido", &.{detalle});
+    }
+    else{
+        print("F\n");
+    }
+
 }
 
 fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
@@ -203,9 +211,19 @@ fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
         const input = try utils.readNumber(usize, stdin);
 
         switch (input) {
-            1 => try darAltaDetalle(pedido, allocator, connection),
-            2 => try rollbackToSavepoint("pedido_creado", allocator, connection),
-            3 => try rollback(allocator, connection),
+            1 => {
+                try darAltaDetalle(pedido, allocator, connection);
+                mostrarContenidoTablas(allocator, connection);
+            },
+            2 => {
+                try rollbackToSavepoint("pedido_creado", allocator, connection);
+                mostrarContenidoTablas(allocator, connection);
+            },
+            3 => {
+                try rollback(allocator, connection);
+                mostrarContenidoTablas(allocator, connection);
+                break;
+            },
             4 => {
                 _ = try cursor.statement.executeDirect("COMMIT");
                 break;
