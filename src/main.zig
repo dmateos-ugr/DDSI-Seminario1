@@ -8,18 +8,25 @@ const SqlDate = zdb.odbc.Types.CType.SqlDate;
 // DAVID CANTÓN: capturar datos del pedido e insertarlo; menú que viene justo despues
 // DANIEL ZUFRÍ: opciones 1 y 2 del menú de dar de alta nuevo pedido
 
-fn printMenu(out: std.fs.File.Writer) !void {
-    try out.print("\n1. Restablecer tablas e inserción de 10 tuplas predefinidas en la tabla Stock\n", .{});
-    try out.print("2. Dar de alta nuevo pedido\n", .{});
-    try out.print("3. Mostrar contenido de las tablas\n", .{});
-    try out.print("4. Salir y cerrar conexión\n", .{});
+const stdin = std.io.getStdIn().reader();
+
+fn print(comptime format: []const u8, args: anytype) void {
+    const stdout = std.io.getStdOut().writer();
+    stdout.print(format, args) catch unreachable;
 }
 
-fn printAltaPedido(out: std.fs.File.Writer) !void {
-    try out.print("\n1. Añadir detalle de producto\n", .{});
-    try out.print("2. Eliminar todos los detalles de producto\n", .{});
-    try out.print("3. Cancelar pedido\n", .{});
-    try out.print("4. Finalizar pedido\n", .{});
+fn printMenu() void {
+    print("\n1. Restablecer tablas e inserción de 10 tuplas predefinidas en la tabla Stock\n", .{});
+    print("2. Dar de alta nuevo pedido\n", .{});
+    print("3. Mostrar contenido de las tablas\n", .{});
+    print("4. Salir y cerrar conexión\n", .{});
+}
+
+fn printAltaPedido() void {
+    print("\n1. Añadir detalle de producto\n", .{});
+    print("2. Eliminar todos los detalles de producto\n", .{});
+    print("3. Cancelar pedido\n", .{});
+    print("4. Finalizar pedido\n", .{});
 }
 
 const Stock = struct {
@@ -84,11 +91,9 @@ fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void
     }
 }
 
-fn readPedido(allocator: *Allocator, connection: *zdb.DBConnection, in: std.fs.File.Reader) !Pedido {
+fn readPedido(allocator: *Allocator, connection: *zdb.DBConnection) !Pedido {
     var cursor = try connection.getCursor(allocator);
     defer cursor.deinit() catch unreachable;
-
-    var stdout = std.io.getStdOut().writer();
 
     // Obtener el cpedido, leyendo el máximo cpedido de la base de datos
     const cpedido = bloque: {
@@ -117,8 +122,8 @@ fn readPedido(allocator: *Allocator, connection: *zdb.DBConnection, in: std.fs.F
     };
 
     // Leer el código de cliente
-    try stdout.print("Introduzca su codigo de cliente ", .{});
-    const ccliente = try utils.readNumber(u32, in);
+    print("Introduzca su codigo de cliente ", .{});
+    const ccliente = try utils.readNumber(u32, stdin);
 
     return Pedido{
         .cpedido = cpedido,
@@ -127,46 +132,37 @@ fn readPedido(allocator: *Allocator, connection: *zdb.DBConnection, in: std.fs.F
     };
 }
 
-fn readStock(allocator: *Allocator, connection: *zdb.DBConnection, in: std.fs.File.Reader) !Stock {
-    var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit() catch unreachable;
-
-    var stdout = std.io.getStdOut().writer();
-
-    // Obtener el cproducto, leyendo el máximo cpedido de la base de datos
-    const cproducto = bloque: {
-        const MaxStruct = struct {
-            max: u32,
-        };
-        var result_set = try cursor.executeDirect(MaxStruct, .{},
-            \\ SELECT MAX(cproducto)
-            \\ FROM stock;
-        );
-        defer result_set.deinit();
-
-        // Obtener el resultado del query. Si no hay ninguno, asignamos 1.
-        const max_struct = (try result_set.next()) orelse break :bloque 1;
-        break :bloque max_struct.max + 1;
-    };
+fn readDetallePedido(pedido: Pedido) !DetallePedido {
+    // Leer cproducto
+    print("Introduzca el código del producto que quiere comprar.\n", .{});
+    const cproducto = try utils.readNumber(u32, stdin);
 
     // Leer cantidad
-    try stdout.print("Introduzca la cantidad del producto {} ", .{cproducto});
-    const cantidad = try utils.readNumber(u32, in);
+    print("Introduzca la cantidad del producto {}\n", .{cproducto});
+    const cantidad = try utils.readNumber(u32, stdin);
 
-    return Stock{
+    return DetallePedido{
+        .cpedido = pedido.cpedido,
         .cproducto = cproducto,
-        .cantidad = cantidad
+        .cantidad = cantidad,
     };
 }
 
-fn createSavePoint(comptime nombre: []const u8, allocator: *Allocator, connection: *zdb.DBConnection) !void{
+fn createSavePoint(comptime nombre: []const u8, allocator: *Allocator, connection: *zdb.DBConnection) !void {
     var cursor = try connection.getCursor(allocator);
     defer cursor.deinit() catch unreachable;
 
     _ = try cursor.statement.executeDirect("SAVEPOINT " ++ nombre);
 }
 
-fn returnToSavePoint(comptime nombre: []const u8, allocator: *Allocator, connection: *zdb.DBConnection) !void{
+fn rollback(allocator: *Allocator, connection: *zdb.DBConnection) !void {
+    var cursor = try connection.getCursor(allocator);
+    defer cursor.deinit() catch unreachable;
+
+    _ = try cursor.statement.executeDirect("ROLLBACK");
+}
+
+fn rollbackToSavepoint(comptime nombre: []const u8, allocator: *Allocator, connection: *zdb.DBConnection) !void {
     var cursor = try connection.getCursor(allocator);
     defer cursor.deinit() catch unreachable;
 
@@ -176,32 +172,26 @@ fn returnToSavePoint(comptime nombre: []const u8, allocator: *Allocator, connect
 fn darAltaDetalle(pedido: Pedido, allocator: *Allocator, connection: *zdb.DBConnection) !void {
     var cursor = try connection.getCursor(allocator);
     defer cursor.deinit() catch unreachable;
-    var stdin = std.io.getStdIn().reader();
-    var stdout = std.io.getStdOut().writer();
 
-    // Capturamos stock
-    const stock = try readStock(allocator, connection, stdin);
-    const detalle = DetallePedido{
-        .cpedido = pedido.cpedido,
-        .cproducto = stock.cproducto,
-        .cantidad = stock.cantidad
-    };
+    // TODO: arreglar esto
+    // se debe comprobar que hay suficiente cantidad, y en ese caso modificar
+    // la tupla dentro de Stock
+
+    // Leemos el DetallePedido
+    const detalle = try readDetallePedido(pedido);
 
     // Insertamos en la tabla
-    if(stock.cantidad>0){
-        _ = try cursor.insert(Stock, "stock", &.{stock});
-        _ = try cursor.insert(DetallePedido, "detalle_pedido", &.{detalle});
-    }
+    // if (stock.cantidad > 0) {
+    _ = try cursor.insert(DetallePedido, "detalle_pedido", &.{detalle});
+    // }
 }
 
 fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
     var cursor = try connection.getCursor(allocator);
     defer cursor.deinit() catch unreachable;
-    var stdin = std.io.getStdIn().reader();
-    var stdout = std.io.getStdOut().writer();
 
     // Capturamos pedido
-    const pedido = try readPedido(allocator, connection, stdin);
+    const pedido = try readPedido(allocator, connection);
 
     // Insertamos en la tabla
     _ = try createSavePoint("pedido_no_creado", allocator, connection);
@@ -209,35 +199,58 @@ fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
     _ = try createSavePoint("pedido_creado", allocator, connection);
 
     while (true) {
-        try printAltaPedido(stdout);
+        printAltaPedido();
         const input = try utils.readNumber(usize, stdin);
 
         switch (input) {
             1 => try darAltaDetalle(pedido, allocator, connection),
-            2 => try returnToSavePoint("pedido_creado", allocator, connection),
-            3 => try returnToSavePoint("pedido_no_creado", allocator, connection),
+            2 => try rollbackToSavepoint("pedido_creado", allocator, connection),
+            3 => try rollback(allocator, connection),
             4 => {
-                _=try cursor.statement.executeDirect("COMMIT"); 
+                _ = try cursor.statement.executeDirect("COMMIT");
                 break;
             },
             else => {
-                try stdout.print("El número debe ser del 1 al 4\n", .{});
+                print("El número debe ser del 1 al 4\n", .{});
                 continue;
+            },
+        }
+    }
+}
+
+fn mostrarContenidoTabla(
+    comptime StructType: type,
+    comptime nombre_tabla: []const u8,
+    cursor: *zdb.Cursor,
+) !void {
+    var result_set = try cursor.executeDirect(StructType, .{}, "SELECT * FROM " ++ nombre_tabla);
+    defer result_set.deinit();
+
+    print("\n[" ++ nombre_tabla ++ "]\n", .{});
+    while (try result_set.next()) |result| {
+        // Comptime magic: por cada campo de StructType, imprimir el nombre del
+        // campo y su valor. Recorremos los campos de StructType. Dado el nombre
+        // del campo como string, podemos acceder al valor en una instancia del
+        // struct (result) usando @field. Si el tipo es SqlDate hacemos un
+        // formateo especial.
+        inline for (comptime std.meta.fields(StructType)) |field| {
+            const value = @field(result, field.name);
+            if (field.field_type == SqlDate) {
+                print("{s}: [{}/{}/{}]; ", .{ field.name, value.day, value.month, value.year });
+            } else {
+                print("{s}: {}; ", .{ field.name, value });
             }
         }
+        print("\n", .{});
     }
 }
 
 fn mostrarContenidoTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void {
     var cursor = try connection.getCursor(allocator);
     defer cursor.deinit() catch unreachable;
-
-    var result_set = try cursor.executeDirect(Stock, .{}, "SELECT * FROM STOCK;");
-    defer result_set.deinit();
-
-    while (try result_set.next()) |result| {
-        std.debug.print("stock: {}\n", .{result});
-    }
+    try mostrarContenidoTabla(Stock, "STOCK", &cursor);
+    try mostrarContenidoTabla(Pedido, "PEDIDO", &cursor);
+    try mostrarContenidoTabla(DetallePedido, "DETALLE_PEDIDO", &cursor);
 }
 
 pub fn main() anyerror!void {
@@ -245,15 +258,16 @@ pub fn main() anyerror!void {
     defer _ = gpa.deinit();
     const allocator = &gpa.allocator;
 
-    var stdout = std.io.getStdOut().writer();
-    var stdin = std.io.getStdIn().reader();
-
+    // Conectarnos a la base de datos
     var connection = try zdb.DBConnection.initWithConnectionString("DRIVER={Oracle 21 ODBC driver};DBQ=oracle0.ugr.es:1521/practbd.oracle0.ugr.es;UID=x7034014;PWD=x7034014;");
     defer connection.deinit();
-    try stdout.print("Conectado!\n", .{});
+    print("Conectado!\n", .{});
+
+    // Desactivar autocommit
+    try connection.setCommitMode(.manual);
 
     while (true) {
-        try printMenu(stdout);
+        printMenu();
 
         // Leer número
         const input = try utils.readNumber(usize, stdin);
@@ -264,11 +278,11 @@ pub fn main() anyerror!void {
             3 => try mostrarContenidoTablas(allocator, &connection),
             4 => break,
             else => {
-                try stdout.print("El número debe ser del 1 al 4\n", .{});
+                print("El número debe ser del 1 al 4\n", .{});
                 continue;
             },
         }
     }
 
-    try stdout.print("\nHasta luego\n", .{});
+    print("\nHasta luego\n", .{});
 }
