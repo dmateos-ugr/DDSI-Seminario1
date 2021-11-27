@@ -98,15 +98,15 @@ fn readPedido(allocator: *Allocator, connection: *zdb.DBConnection) !Pedido {
         const MaxStruct = struct {
             max: u32,
         };
-        var result_set = try cursor.executeDirect(MaxStruct, .{},
+        var max_cpedido_tuplas = try cursor.executeDirect(MaxStruct, .{},
             \\ SELECT MAX(cpedido)
             \\ FROM pedido;
         );
-        defer result_set.deinit();
+        defer max_cpedido_tuplas.deinit();
 
         // Obtener el resultado del query. Si no hay ninguno, asignamos 1.
-        const max_struct = (try result_set.next()) orelse break :bloque 1;
-        break :bloque max_struct.max + 1;
+        const max_cpedido = (try max_cpedido_tuplas.next()) orelse break :bloque 1;
+        break :bloque max_cpedido.max + 1;
     };
 
     // Obtener la fecha en formato SQL
@@ -184,9 +184,9 @@ fn darAltaDetalle(pedido: Pedido, allocator: *Allocator, connection: *zdb.DBConn
         );
         defer allocator.free(sql_query);
 
-        var result_set = try cursor.executeDirect(Stock, .{}, sql_query);
-        defer result_set.deinit();
-        const stock = (try result_set.next()) orelse {
+        var stocks = try cursor.executeDirect(Stock, .{}, sql_query);
+        defer stocks.deinit();
+        const stock = (try stocks.next()) orelse {
             print("No existe el producto de código {}\n", .{cproducto});
             return;
         };
@@ -275,18 +275,19 @@ fn mostrarContenidoTabla(
     comptime nombre_tabla: []const u8,
     cursor: *zdb.Cursor,
 ) !void {
-    var result_set = try cursor.executeDirect(StructType, .{}, "SELECT * FROM " ++ nombre_tabla);
-    defer result_set.deinit();
+    var tuplas = try cursor.executeDirect(StructType, .{}, "SELECT * FROM " ++ nombre_tabla);
+    defer tuplas.deinit();
 
     print("\n[" ++ nombre_tabla ++ "]\n", .{});
-    while (try result_set.next()) |result| {
+    while (try tuplas.next()) |tupla| {
         // Comptime magic: por cada campo de StructType, imprimir el nombre del
         // campo y su valor. Recorremos los campos de StructType. Dado el nombre
         // del campo como string, podemos acceder al valor en una instancia del
-        // struct (result) usando @field. Si el tipo es SqlDate hacemos un
-        // formateo especial.
+        // struct (tupla) usando @field. Ej: @field(stock, "cproducto") es lo
+        // mismo que stock.cproducto. Si el tipo es SqlDate hacemos un formateo
+        // especial.
         inline for (comptime std.meta.fields(StructType)) |field| {
-            const value = @field(result, field.name);
+            const value = @field(tupla, field.name);
             if (field.field_type == SqlDate) {
                 print("{s}: [{}/{}/{}]; ", .{ field.name, value.day, value.month, value.year });
             } else {
