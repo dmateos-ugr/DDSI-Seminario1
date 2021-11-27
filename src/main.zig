@@ -127,6 +127,73 @@ fn readPedido(allocator: *Allocator, connection: *zdb.DBConnection, in: std.fs.F
     };
 }
 
+fn readStock(allocator: *Allocator, connection: *zdb.DBConnection, in: std.fs.File.Reader) !Stock {
+    var cursor = try connection.getCursor(allocator);
+    defer cursor.deinit() catch unreachable;
+
+    var stdout = std.io.getStdOut().writer();
+
+    // Obtener el cproducto, leyendo el máximo cpedido de la base de datos
+    const cproducto = bloque: {
+        const MaxStruct = struct {
+            max: u32,
+        };
+        var result_set = try cursor.executeDirect(MaxStruct, .{},
+            \\ SELECT MAX(cproducto)
+            \\ FROM stock;
+        );
+        defer result_set.deinit();
+
+        // Obtener el resultado del query. Si no hay ninguno, asignamos 1.
+        const max_struct = (try result_set.next()) orelse break :bloque 1;
+        break :bloque max_struct.max + 1;
+    };
+
+    // Leer cantidad
+    try stdout.print("Introduzca la cantidad del producto {} ", .{cproducto});
+    const cantidad = try utils.readNumber(u32, in);
+
+    return Stock{
+        .cproducto = cproducto,
+        .cantidad = cantidad
+    };
+}
+
+fn createSavePoint(comptime nombre: []const u8, allocator: *Allocator, connection: *zdb.DBConnection) !void{
+    var cursor = try connection.getCursor(allocator);
+    defer cursor.deinit() catch unreachable;
+
+    _ = try cursor.statement.executeDirect("SAVEPOINT " ++ nombre);
+}
+
+fn returnToSavePoint(comptime nombre: []const u8, allocator: *Allocator, connection: *zdb.DBConnection) !void{
+    var cursor = try connection.getCursor(allocator);
+    defer cursor.deinit() catch unreachable;
+
+    _ = try cursor.statement.executeDirect("ROLLBACK TO " ++ nombre);
+}
+
+fn darAltaDetalle(pedido: Pedido, allocator: *Allocator, connection: *zdb.DBConnection) !void {
+    var cursor = try connection.getCursor(allocator);
+    defer cursor.deinit() catch unreachable;
+    var stdin = std.io.getStdIn().reader();
+    var stdout = std.io.getStdOut().writer();
+
+    // Capturamos stock
+    const stock = try readStock(allocator, connection, stdin);
+    const detalle = DetallePedido{
+        .cpedido = pedido.cpedido,
+        .cproducto = stock.cproducto,
+        .cantidad = stock.cantidad
+    };
+
+    // Insertamos en la tabla
+    if(stock.cantidad>0){
+        _ = try cursor.insert(Stock, "stock", &.{stock});
+        _ = try cursor.insert(DetallePedido, "detalle_pedido", &.{detalle});
+    }
+}
+
 fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
     var cursor = try connection.getCursor(allocator);
     defer cursor.deinit() catch unreachable;
@@ -137,17 +204,22 @@ fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
     const pedido = try readPedido(allocator, connection, stdin);
 
     // Insertamos en la tabla
+    _ = try createSavePoint("pedido_no_creado", allocator, connection);
     _ = try cursor.insert(Pedido, "pedido", &.{pedido});
+    _ = try createSavePoint("pedido_creado", allocator, connection);
 
     while (true) {
         try printAltaPedido(stdout);
         const input = try utils.readNumber(usize, stdin);
 
         switch (input) {
-            1 => {},
-            2 => {},
-            3 => {},
-            4 => {},
+            1 => try darAltaDetalle(pedido, allocator, connection),
+            2 => try returnToSavePoint("pedido_creado", allocator, connection),
+            3 => try returnToSavePoint("pedido_no_creado", allocator, connection),
+            4 => {
+                _=try cursor.statement.executeDirect("COMMIT"); 
+                break;
+            },
             else => {
                 try stdout.print("El número debe ser del 1 al 4\n", .{});
                 continue;
