@@ -193,6 +193,30 @@ fn darAltaDetalle(pedido: Pedido, allocator: *Allocator, connection: *zdb.DBConn
         break :bloque stock;
     };
 
+
+    // Comprobar que no hay ningún detalle asociado al pedido con ese código de producto
+    {
+        var cursor = try connection.getCursor(allocator);
+        defer cursor.deinit() catch unreachable;
+        const sql_query = try std.fmt.allocPrint(
+            allocator,
+            "SELECT COUNT(*) FROM detalle_pedido WHERE cpedido = {} AND cproducto = {};",
+            .{ pedido.cpedido, cproducto },
+        );
+        defer allocator.free(sql_query);
+
+        const CountStruct = struct {
+            count: u32,
+        };
+        var count_tuplas = try cursor.executeDirect(CountStruct, .{}, sql_query);
+        defer count_tuplas.deinit();
+        const count_struct = (try count_tuplas.next()).?;
+        if (count_struct.count != 0) {
+            print("Ya existe un detalle del producto {} asociado al pedido\n", .{cproducto});
+            return;
+        }
+    }
+
     // Leer cantidad
     print("Introduzca la cantidad del producto {}\n", .{cproducto});
     const cantidad = try utils.readNumber(u32, stdin);
