@@ -1,8 +1,7 @@
 const std = @import("std");
-const zdb = @import("zdb");
+const sql = @import("sql.zig");
 const utils = @import("utils.zig");
-const Allocator = std.mem.Allocator;
-const SqlDate = zdb.odbc.Types.CType.SqlDate;
+const SqlDate = @import("zdb").odbc.Types.CType.SqlDate;
 
 const stdin = std.io.getStdIn().reader();
 
@@ -42,30 +41,27 @@ const DetallePedido = struct {
     cantidad: u32,
 };
 
-fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void {
-    var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit() catch unreachable;
+fn restablecerTablas() !void {
+    sql.execute("DROP TABLE detalle_pedido", .{}) catch {};
+    sql.execute("DROP TABLE stock", .{}) catch {};
+    sql.execute("DROP TABLE pedido", .{}) catch {};
 
-    _ = cursor.statement.executeDirect("DROP TABLE detalle_pedido") catch {};
-    _ = cursor.statement.executeDirect("DROP TABLE stock") catch {};
-    _ = cursor.statement.executeDirect("DROP TABLE pedido") catch {};
-
-    _ = try cursor.statement.executeDirect(
+    try sql.execute(
         \\CREATE TABLE stock (
         \\  Cproducto INTEGER PRIMARY KEY,
         \\  cantidad INTEGER
         \\)
-    );
+    , .{});
 
-    _ = try cursor.statement.executeDirect(
+    try sql.execute(
         \\CREATE TABLE pedido (
         \\  Cpedido INTEGER PRIMARY KEY,
         \\  Ccliente INTEGER,
         \\  fecha_pedido DATE
         \\)
-    );
+    , .{});
 
-    _ = try cursor.statement.executeDirect(
+    try sql.execute(
         \\CREATE TABLE detalle_pedido (
         \\  Cpedido INTEGER REFERENCES pedido(Cpedido),
         \\  Cproducto INTEGER REFERENCES stock(Cproducto),
@@ -73,7 +69,7 @@ fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void
         \\  CHECK(cantidad >= 0),
         \\  CONSTRAINT detalle_pedido_clave_primaria PRIMARY KEY (Cpedido, Cproducto)
         \\)
-    );
+    , .{});
 
     var stocks: [10]Stock = undefined;
     for (stocks) |*stock, i| {
@@ -81,32 +77,22 @@ fn restablecerTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void
         stock.cantidad = @intCast(u32, i + 1);
     }
 
-    const result = try cursor.insert(Stock, "stock", &stocks);
+    const result = try sql.insert(Stock, "stock", &stocks);
     if (result != stocks.len) {
         std.log.warn("it inserted {} instead of {}\n", .{ result, stocks.len });
     }
 
-    _ = try cursor.statement.executeDirect("COMMIT");
+    _ = try sql.execute("COMMIT", .{});
 }
 
-fn readPedido(allocator: *Allocator, connection: *zdb.DBConnection) !Pedido {
-    var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit() catch unreachable;
-
+fn readPedido() !Pedido {
     // Obtener el cpedido, leyendo el máximo cpedido de la base de datos
     const cpedido = bloque: {
-        const MaxStruct = struct {
-            max: u32,
-        };
-        var max_cpedido_tuplas = try cursor.executeDirect(MaxStruct, .{},
+        const max_cpedido = (try sql.querySingleValue(u32,
             \\ SELECT MAX(cpedido)
             \\ FROM pedido;
-        );
-        defer max_cpedido_tuplas.deinit();
-
-        // Obtener el resultado del query. Si no hay ninguno, asignamos 1.
-        const max_cpedido = (try max_cpedido_tuplas.next()) orelse break :bloque 1;
-        break :bloque max_cpedido.max + 1;
+        , .{})) orelse 0;
+        break :bloque max_cpedido + 1;
     };
 
     // Obtener la fecha en formato SQL
@@ -146,75 +132,26 @@ fn readDetallePedido(pedido: Pedido) !DetallePedido {
     };
 }
 
-fn createSavePoint(comptime nombre: []const u8, allocator: *Allocator, connection: *zdb.DBConnection) !void {
-    var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit() catch unreachable;
-
-    _ = try cursor.statement.executeDirect("SAVEPOINT " ++ nombre);
-}
-
-fn rollback(allocator: *Allocator, connection: *zdb.DBConnection) !void {
-    var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit() catch unreachable;
-
-    _ = try cursor.statement.executeDirect("ROLLBACK");
-}
-
-fn rollbackToSavepoint(comptime nombre: []const u8, allocator: *Allocator, connection: *zdb.DBConnection) !void {
-    var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit() catch unreachable;
-
-    _ = try cursor.statement.executeDirect("ROLLBACK TO " ++ nombre);
-}
-
-fn darAltaDetalle(pedido: Pedido, allocator: *Allocator, connection: *zdb.DBConnection) !void {
+fn darAltaDetalle(pedido: Pedido) !void {
     // Leer cproducto
     print("Introduzca el código del producto que quiere comprar.\n", .{});
     const cproducto = try utils.readNumber(u32, stdin);
 
     // Obtener el stock asociado al cproducto de la base de datos comprobando que existe
-    const stock = bloque: {
-        var cursor = try connection.getCursor(allocator);
-        defer cursor.deinit() catch unreachable;
-
-        const sql_query = try std.fmt.allocPrint(
-            allocator,
-            "SELECT * FROM stock WHERE cproducto = {};",
-            .{cproducto},
-        );
-        defer allocator.free(sql_query);
-
-        var stocks = try cursor.executeDirect(Stock, .{}, sql_query);
-        defer stocks.deinit();
-        const stock = (try stocks.next()) orelse {
-            print("No existe el producto de código {}\n", .{cproducto});
-            return;
-        };
-        break :bloque stock;
+    const stock = (try sql.querySingle(Stock, "SELECT * FROM stock WHERE cproducto = {};", .{cproducto})) orelse {
+        print("No existe el producto de código {}\n", .{cproducto});
+        return;
     };
 
-
     // Comprobar que no hay ningún detalle asociado al pedido con ese código de producto
-    {
-        var cursor = try connection.getCursor(allocator);
-        defer cursor.deinit() catch unreachable;
-        const sql_query = try std.fmt.allocPrint(
-            allocator,
-            "SELECT COUNT(*) FROM detalle_pedido WHERE cpedido = {} AND cproducto = {};",
-            .{ pedido.cpedido, cproducto },
-        );
-        defer allocator.free(sql_query);
-
-        const CountStruct = struct {
-            count: u32,
-        };
-        var count_tuplas = try cursor.executeDirect(CountStruct, .{}, sql_query);
-        defer count_tuplas.deinit();
-        const count_struct = (try count_tuplas.next()).?;
-        if (count_struct.count != 0) {
-            print("Ya existe un detalle del producto {} asociado al pedido\n", .{cproducto});
-            return;
-        }
+    const count = (try sql.querySingleValue(u32,
+        \\SELECT COUNT(*)
+        \\FROM detalle_pedido
+        \\WHERE cpedido = {} AND cproducto = {};
+    , .{ pedido.cpedido, cproducto })).?;
+    if (count != 0) {
+        print("Ya existe un detalle del producto {} asociado al pedido\n", .{cproducto});
+        return;
     }
 
     // Leer cantidad
@@ -238,31 +175,24 @@ fn darAltaDetalle(pedido: Pedido, allocator: *Allocator, connection: *zdb.DBConn
     }
 
     // Insertar el detalle
-    var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit() catch unreachable;
-    _ = try cursor.insert(DetallePedido, "detalle_pedido", &.{detalle});
+    _ = try sql.insert(DetallePedido, "detalle_pedido", &.{detalle});
 
     // Actualizar la cantidad del stock
     const nueva_cantidad = stock.cantidad - detalle.cantidad;
-    const sql_query = try std.fmt.allocPrint(allocator,
+    try sql.execute(
         \\UPDATE stock
         \\SET cantidad = {}
         \\WHERE cproducto = {};
     , .{ nueva_cantidad, stock.cproducto });
-    defer allocator.free(sql_query);
-    _ = try cursor.statement.executeDirect(sql_query);
 }
 
-fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
-    var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit() catch unreachable;
-
+fn darDeAltaPedido() !void {
     // Capturamos pedido
-    const pedido = try readPedido(allocator, connection);
+    const pedido = try readPedido();
 
     // Insertamos en la tabla
-    _ = try cursor.insert(Pedido, "pedido", &.{pedido});
-    _ = try createSavePoint("pedido_creado", allocator, connection);
+    _ = try sql.insert(Pedido, "pedido", &.{pedido});
+    _ = try sql.createSavePoint("pedido_creado");
 
     while (true) {
         printAltaPedido();
@@ -270,20 +200,20 @@ fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
 
         switch (input) {
             1 => {
-                try darAltaDetalle(pedido, allocator, connection);
-                try mostrarContenidoTablas(allocator, connection);
+                try darAltaDetalle(pedido);
+                try mostrarContenidoTablas();
             },
             2 => {
-                try rollbackToSavepoint("pedido_creado", allocator, connection);
-                try mostrarContenidoTablas(allocator, connection);
+                try sql.rollbackToSavePoint("pedido_creado");
+                try mostrarContenidoTablas();
             },
             3 => {
-                try rollback(allocator, connection);
-                try mostrarContenidoTablas(allocator, connection);
+                try sql.rollbackToSavePoint(null);
+                try mostrarContenidoTablas();
                 break;
             },
             4 => {
-                _ = try cursor.statement.executeDirect("COMMIT");
+                try sql.execute("COMMIT", .{});
                 break;
             },
             else => {
@@ -297,13 +227,12 @@ fn darDeAltaPedido(allocator: *Allocator, connection: *zdb.DBConnection) !void {
 fn mostrarContenidoTabla(
     comptime StructType: type,
     comptime nombre_tabla: []const u8,
-    cursor: *zdb.Cursor,
 ) !void {
-    var tuplas = try cursor.executeDirect(StructType, .{}, "SELECT * FROM " ++ nombre_tabla);
-    defer tuplas.deinit();
+    var tuplas = try sql.query(StructType, "SELECT * FROM " ++ nombre_tabla, .{});
+    defer sql.getAllocator().free(tuplas);
 
     print("\n[" ++ nombre_tabla ++ "]\n", .{});
-    while (try tuplas.next()) |tupla| {
+    for (tuplas) |tupla| {
         // Comptime magic: por cada campo de StructType, imprimir el nombre del
         // campo y su valor. Recorremos los campos de StructType. Dado el nombre
         // del campo como string, podemos acceder al valor en una instancia del
@@ -322,12 +251,10 @@ fn mostrarContenidoTabla(
     }
 }
 
-fn mostrarContenidoTablas(allocator: *Allocator, connection: *zdb.DBConnection) !void {
-    var cursor = try connection.getCursor(allocator);
-    defer cursor.deinit() catch unreachable;
-    try mostrarContenidoTabla(Stock, "STOCK", &cursor);
-    try mostrarContenidoTabla(Pedido, "PEDIDO", &cursor);
-    try mostrarContenidoTabla(DetallePedido, "DETALLE_PEDIDO", &cursor);
+fn mostrarContenidoTablas() !void {
+    try mostrarContenidoTabla(Stock, "STOCK");
+    try mostrarContenidoTabla(Pedido, "PEDIDO");
+    try mostrarContenidoTabla(DetallePedido, "DETALLE_PEDIDO");
 }
 
 pub fn main() anyerror!void {
@@ -336,12 +263,9 @@ pub fn main() anyerror!void {
     const allocator = &gpa.allocator;
 
     // Conectarnos a la base de datos
-    var connection = try zdb.DBConnection.initWithConnectionString("DRIVER={Oracle 21 ODBC driver};DBQ=oracle0.ugr.es:1521/practbd.oracle0.ugr.es;UID=x7034014;PWD=x7034014;");
-    defer connection.deinit();
+    try sql.init(allocator, "DRIVER={Oracle 21 ODBC driver};DBQ=oracle0.ugr.es:1521/practbd.oracle0.ugr.es;UID=x7034014;PWD=x7034014;");
+    defer sql.deinit();
     print("Conectado!\n", .{});
-
-    // Desactivar autocommit
-    try connection.setCommitMode(.manual);
 
     while (true) {
         printMenu();
@@ -350,9 +274,9 @@ pub fn main() anyerror!void {
         const input = try utils.readNumber(usize, stdin);
 
         switch (input) {
-            1 => try restablecerTablas(allocator, &connection),
-            2 => try darDeAltaPedido(allocator, &connection),
-            3 => try mostrarContenidoTablas(allocator, &connection),
+            1 => try restablecerTablas(),
+            2 => try darDeAltaPedido(),
+            3 => try mostrarContenidoTablas(),
             4 => break,
             else => {
                 print("El número debe ser del 1 al 4\n", .{});
